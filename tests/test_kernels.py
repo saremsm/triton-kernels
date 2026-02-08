@@ -19,6 +19,7 @@ TOL = {
 
 SOFTMAX_SHAPES = [(8, 128), (1823, 781), (4096, 4096), (1, 1), (5, 2049), (64, 1)]
 LN_SHAPES = [(8, 128), (1823, 781), (4096, 4096), (5, 2049)]
+MM_SHAPES = [(256, 256, 256), (512, 384, 320), (1024, 1024, 1024), (300, 513, 257)]
 
 
 @pytest.mark.parametrize("shape", SOFTMAX_SHAPES)
@@ -86,3 +87,49 @@ def test_layernorm_nonpow2_variance_is_unbiased():
     shifted = layernorm(x + 100.0, w, b)
     base = layernorm(x, w, b)
     torch.testing.assert_close(shifted, base, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize("shape", MM_SHAPES)
+def test_matmul_matches_cublas_fp16(shape):
+    from kernels import matmul
+
+    M, K, N = shape[0], shape[2], shape[1]
+    a = torch.randn(M, K, device="cuda", dtype=torch.float16)
+    b = torch.randn(K, N, device="cuda", dtype=torch.float16)
+    ref = (a.float() @ b.float()).to(torch.float16)
+    out = matmul(a, b)
+    torch.testing.assert_close(out, ref, atol=2e-2, rtol=2e-2)
+
+
+def test_matmul_transposed_view_no_copy():
+    from kernels import matmul
+
+    a = torch.randn(256, 320, device="cuda", dtype=torch.float16)
+    b_src = torch.randn(192, 320, device="cuda", dtype=torch.float16)
+    b = b_src.t()  # strided view, not contiguous
+    assert not b.is_contiguous()
+    ref = (a.float() @ b.float()).to(torch.float16)
+    torch.testing.assert_close(matmul(a, b), ref, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+    reason="bf16 requires Ampere+",
+)
+def test_matmul_bf16():
+    from kernels import matmul
+
+    a = torch.randn(512, 512, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(512, 512, device="cuda", dtype=torch.bfloat16)
+    ref = (a.float() @ b.float()).to(torch.bfloat16)
+    torch.testing.assert_close(matmul(a, b), ref, **TOL[torch.bfloat16])
+
+
+def test_matmul_rejects_bad_inputs():
+    from kernels import matmul
+
+    a = torch.randn(4, 8, device="cuda", dtype=torch.float16)
+    with pytest.raises(ValueError, match="shape mismatch"):
+        matmul(a, torch.randn(4, 4, device="cuda", dtype=torch.float16))
+    with pytest.raises(ValueError, match="dtypes"):
+        matmul(a, torch.randn(8, 4, device="cuda", dtype=torch.float32))
