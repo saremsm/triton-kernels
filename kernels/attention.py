@@ -8,6 +8,8 @@ import triton.language as tl
 
 _CONFIGS = [
     triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=3),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_warps=4, num_stages=2),
 ]
 
 
@@ -97,3 +99,45 @@ def _attention_kernel(
         out.to(o_ptr.dtype.element_ty),
         mask=m_mask[:, None],
     )
+
+
+def attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    causal: bool = False,
+    scale: float | None = None,
+) -> torch.Tensor:
+    """softmax(Q K^T * scale) V without materializing the score matrix."""
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError("expected 4D (batch, heads, seq, head_dim) tensors")
+    B, H, M, D = q.shape
+    Bk, Hk, N, Dk = k.shape
+    if (B, H, D) != (Bk, Hk, Dk) or k.shape != v.shape:
+        raise ValueError(f"shape mismatch: q {tuple(q.shape)}, k {tuple(k.shape)}, v {tuple(v.shape)}")
+    if not (q.is_cuda and k.is_cuda and v.is_cuda):
+        raise ValueError("triton attention requires CUDA tensors")
+    if q.dtype not in (torch.float16, torch.bfloat16) or not (q.dtype == k.dtype == v.dtype):
+        raise ValueError("supported dtypes: fp16/bf16 (matching)")
+    if D < 16 or D > 128 or (D & (D - 1)) != 0:
+        raise ValueError(f"head_dim must be a power of two in [16, 128], got {D}")
+    if causal and M != N:
+        raise ValueError("causal attention requires seq_q == seq_k")
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(D)
+
+    o = torch.empty_like(q)
+    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]), B * H)
+    _attention_kernel[grid](
+        q, k, v, o,
+        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+        H, M, N,
+        scale,
+        HEAD_DIM=D,
+        IS_CAUSAL=causal,
+    )
+    return o
