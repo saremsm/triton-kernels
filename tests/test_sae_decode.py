@@ -2,6 +2,8 @@ import os
 
 import pytest
 import torch
+from kernels.sae_decode import sparsify, densify
+
 
 INTERPRET = os.environ.get("TRITON_INTERPRET") == "1"
 if torch.cuda.is_available():
@@ -36,6 +38,22 @@ def make_weights(device, dtype=torch.float32, seed=1):
     W = W / W.norm(dim=1, keepdim=True)          # unit-norm rows, like the SAE
     b = torch.randn(D_MODEL, generator=g, dtype=torch.float32)
     return W.to(device, dtype), b.to(device, dtype)
+
+
+def test_sparsify_roundtrip():
+    h = make_sparse_h(50, N_FEATURES, 13, DEVICE, seed=9)
+    idx, val = sparsify(h)
+    torch.testing.assert_close(densify(idx, val, N_FEATURES), h, atol=0, rtol=0)
+
+
+def test_sparsify_exact_l0_padding_contract():
+    h = make_sparse_h(20, N_FEATURES, MEASURED_L0, DEVICE, seed=11)
+    idx, val = sparsify(h)
+    assert idx.dtype == torch.int32
+    assert val.shape[1] % 8 == 0                       # pad_multiple honored
+    nnz_kept = (val > 0).sum(dim=-1)
+    assert (nnz_kept == MEASURED_L0).all()             # nothing lost
+    assert (val[:, MEASURED_L0:] == 0).all()           # pads exactly zero
 
 
 def test_checkpoint_format_loads_and_matches(tmp_path):
