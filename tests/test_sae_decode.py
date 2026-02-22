@@ -2,7 +2,7 @@ import os
 
 import pytest
 import torch
-from kernels.sae_decode import sparsify, densify
+from kernels.sae_decode import sae_decode, sparsify, densify
 
 
 INTERPRET = os.environ.get("TRITON_INTERPRET") == "1"
