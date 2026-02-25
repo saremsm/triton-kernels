@@ -24,7 +24,7 @@ def make_sparse_h(n, n_features, l0, device, dtype=torch.float32, seed=0):
     h = torch.zeros(n, n_features, dtype=dtype)
     for row in range(n):
         cols = torch.randperm(n_features, generator=g)[:l0]
-        h[row, cols] = torch.rand(l0, generator=g) + 0.1
+        h[row, cols] = (torch.rand(l0, generator=g) + 0.1).to(dtype)
     return h.to(device)
 
 
