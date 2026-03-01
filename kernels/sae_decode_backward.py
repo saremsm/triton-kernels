@@ -131,3 +131,80 @@ def _segments_to_offsets(sorted_feat: torch.Tensor, F: int, device):
     boundaries = torch.arange(F + 1, device=device)
     seg = torch.searchsorted(sorted_feat, boundaries, right=False)
     return seg.to(torch.int32).contiguous()
+
+
+def sae_decode_backward(grad_out: torch.Tensor, idx: torch.Tensor,
+                        val: torch.Tensor, W_dec: torch.Tensor,
+                        backend: str = "atomic"):
+    """Return (grad_val, grad_W_dec, grad_b_dec). backend in {atomic, deterministic}."""
+    if backend not in ("atomic", "deterministic"):
+        raise ValueError(f"backend must be 'atomic' or 'deterministic', got {backend!r}")
+    N, K = idx.shape
+    F, D = W_dec.shape
+    dev = W_dec.device
+    g = grad_out.contiguous()
+
+    grad_b = g.to(torch.float32).sum(0).to(W_dec.dtype)
+
+    grad_val = torch.empty((N, K), dtype=W_dec.dtype, device=dev)
+    grad_w = torch.zeros((F, D), dtype=torch.float32, device=dev)  # fp32 accum
+    if N == 0 or K == 0:
+        return grad_val, grad_w.to(W_dec.dtype), grad_b
+
+    # grad_val (shared by both backends)
+    _grad_val_kernel[(N, K)](
+        idx, g, W_dec, val, grad_val,
+        N, K, D,
+        idx.stride(0), idx.stride(1),
+        g.stride(0), g.stride(1),
+        W_dec.stride(0), W_dec.stride(1),
+        val.stride(0), val.stride(1),
+        grad_val.stride(0), grad_val.stride(1),
+        BLOCK_D=_BLOCK_D,
+    )
+
+    if backend == "atomic":
+        _grad_w_atomic_kernel[(N, K)](
+            idx, val, g, grad_w,
+            N, K, D,
+            idx.stride(0), idx.stride(1),
+            val.stride(0), val.stride(1),
+            g.stride(0), g.stride(1),
+            grad_w.stride(0), grad_w.stride(1),
+            BLOCK_D=_BLOCK_D,
+        )
+    else:
+        sorted_feat, contrib_val, contrib_row = _prep_segments(idx, val)
+        seg = _segments_to_offsets(sorted_feat, F, dev)
+        _grad_w_segmented_kernel[(F,)](
+            seg, contrib_val, contrib_row, g, grad_w,
+            F, D,
+            g.stride(0), g.stride(1),
+            grad_w.stride(0), grad_w.stride(1),
+            BLOCK_D=_BLOCK_D,
+        )
+
+    return grad_val, grad_w.to(W_dec.dtype), grad_b
+
+
+class SparseSAEDecode(torch.autograd.Function):
+    """Autograd-wrapped sparse decode; trains the decoder end to end."""
+
+    @staticmethod
+    def forward(ctx, idx, val, W_dec, b_dec, backend="atomic"):
+        ctx.save_for_backward(idx, val, W_dec)
+        ctx.backend = backend
+        return sae_decode(idx, val, W_dec, b_dec)
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        idx, val, W_dec = ctx.saved_tensors
+        grad_val, grad_W, grad_b = sae_decode_backward(
+            grad_out, idx, val, W_dec, backend=ctx.backend)
+        # grads match forward args: (idx, val, W_dec, b_dec, backend)
+        return None, grad_val, grad_W, grad_b, None
+
+
+def sae_decode_fn(idx, val, W_dec, b_dec, backend="atomic"):
+    """Functional entry point with autograd support."""
+    return SparseSAEDecode.apply(idx, val, W_dec, b_dec, backend)
