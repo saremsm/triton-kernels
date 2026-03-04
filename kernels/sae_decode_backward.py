@@ -10,7 +10,6 @@ from kernels.sae_decode import _BLOCK_D, _device_ok, sae_decode
 
 __all__ = ["SparseSAEDecode", "sae_decode_fn", "sae_decode_backward"]
 
-
 @triton.jit
 def _grad_val_kernel(
     idx_ptr, g_ptr, w_ptr, val_ptr, gval_ptr,
@@ -109,7 +108,6 @@ def _prep_segments(idx: torch.Tensor, val: torch.Tensor):
     """Flatten active (n, k) contributions and stable-sort by feature id."""
     N, K = idx.shape
     device = idx.device
-    f_max = int(idx.max().item())
     flat_f = idx.reshape(-1).long()
     flat_v = val.reshape(-1)
     flat_n = (torch.arange(N, device=device)
