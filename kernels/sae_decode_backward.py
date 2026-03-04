@@ -72,7 +72,6 @@ def _grad_w_atomic_kernel(
                     mask=dm, other=0.0).to(tl.float32)
         tl.atomic_add(gw_ptr + f * stride_wf + d * stride_wd, v * g, mask=dm)
 
-
 @triton.jit
 def _grad_w_segmented_kernel(
     seg_ptr, contrib_val_ptr, contrib_row_ptr, g_ptr, gw_ptr,
@@ -133,7 +132,7 @@ def _segments_to_offsets(sorted_feat: torch.Tensor, F: int, device):
 
 def sae_decode_backward(grad_out: torch.Tensor, idx: torch.Tensor,
                         val: torch.Tensor, W_dec: torch.Tensor,
-                        backend: str = "atomic"):
+                        backend: str = "deterministic"):
     """Return (grad_val, grad_W_dec, grad_b_dec). backend in {atomic, deterministic}."""
     if backend not in ("atomic", "deterministic"):
         raise ValueError(f"backend must be 'atomic' or 'deterministic', got {backend!r}")
@@ -189,7 +188,7 @@ class SparseSAEDecode(torch.autograd.Function):
     """Autograd-wrapped sparse decode; trains the decoder end to end."""
 
     @staticmethod
-    def forward(ctx, idx, val, W_dec, b_dec, backend="atomic"):
+    def forward(ctx, idx, val, W_dec, b_dec, backend="deterministic"):
         ctx.save_for_backward(idx, val, W_dec)
         ctx.backend = backend
         return sae_decode(idx, val, W_dec, b_dec)
@@ -203,6 +202,6 @@ class SparseSAEDecode(torch.autograd.Function):
         return None, grad_val, grad_W, grad_b, None
 
 
-def sae_decode_fn(idx, val, W_dec, b_dec, backend="atomic"):
+def sae_decode_fn(idx, val, W_dec, b_dec, backend="deterministic"):
     """Functional entry point with autograd support."""
     return SparseSAEDecode.apply(idx, val, W_dec, b_dec, backend)

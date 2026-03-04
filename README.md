@@ -60,6 +60,33 @@ moves left; the kernel and benchmark are unchanged, but the winning
 sparsity regime narrows. The number above holds for the checkpoint it
 names and should not be extrapolated to larger SAEs without re-measuring.
 
+
+#### SAE backward numbers
+
+Measured on **1x A10 (24 GB), driver 580.105.08, torch 2.10.0+cu126,
+triton 3.6.0**, 8192 tokens, F=3072, D=768, fp16. Tests: **89/89 passed**
+(the full backward suite's first end-to-end run anywhere).
+
+| L0 | K_pad | atomic (ms) | deterministic (ms) | **tax** | dense autograd (ms) | index_add (ms) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 8 | 0.926 | 0.927 | **1.00×** | 1.977 | 2.559 |
+| 8 | 8 | 1.355 | 0.986 | **0.73×** | 2.006 | 2.733 |
+| 16 | 16 | 2.542 | 1.337 | **0.53×** | 2.037 | 5.385 |
+| **27** | 32 | 4.390 | 2.098 | **0.48×** | 2.064 | 10.491 |
+| 32 | 32 | 4.933 | 2.212 | **0.45×** | 2.083 | 10.718 |
+| 64 | 64 | 9.801 | 4.267 | **0.44×** | 2.160 | 21.343 |
+| 128 | 128 | 19.519 | 8.293 | **0.42×** | 2.241 | 43.035 |
+| 256 | 256 | 38.839 | 16.328 | **0.42×** | 2.403 | 85.364 |
+| 512 | 512 | 77.520 | 32.851 | **0.42×** | 2.694 | OOM |
+| 1024 | 1024 | 155.574 | 66.242 | **0.43×** | 3.128 | OOM |
+
+Non-determinism demo (high collision, 8192 tokens → one feature, 8 runs):
+atomic max run-to-run |Δ| = **6.25e-2** - exactly 2 fp16 ULPs at the
+magnitude of the contested row (fp32 accumulation is cast back to fp16;
+reorder noise quantized to the fp16 grid) - nondeterminism *observed*
+live. Deterministic max |Δ| = **0.000e+00**, bitwise stability *verified*
+live on real parallel hardware.
+
 ## The canonical four
 
 Fused softmax, fused LayerNorm, tiled matmul, fused attention - the
