@@ -64,6 +64,7 @@ def _attention_stats_kernel(
     m_i = tl.full((BLOCK_M,), float("-inf"), dtype=tl.float32)
     l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
     acc = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
+    r_i = tl.zeros((BLOCK_M,), dtype=tl.float32)              # sum exp(s-shift)*s
 
     if IS_CAUSAL:
         hi = tl.minimum(SEQ_K, (pid_m + 1) * BLOCK_M)
@@ -97,6 +98,8 @@ def _attention_stats_kernel(
 
         l_i = l_i * alpha + tl.sum(p, axis=1)
         acc = acc * alpha[:, None] + tl.dot(p.to(q_ptr.dtype.element_ty), v)
+        if WITH_STATS:
+            r_i = r_i * alpha + tl.sum(tl.where(valid, p * s, 0.0), axis=1)
 
         m_i = m_new
 
@@ -107,6 +110,16 @@ def _attention_stats_kernel(
         out.to(o_ptr.dtype.element_ty),
         mask=m_mask[:, None],
     )
+    if WITH_STATS:
+        row_valid = l_i > 0.0
+        # H = log l + m - r/l  (see module docstring); clamp fp roundoff.
+        ent = tl.log(denom) + tl.where(row_valid, m_i, 0.0) - r_i / denom
+        ent = tl.maximum(tl.where(row_valid, ent, 0.0), 0.0)
+        maxw = tl.where(row_valid, 1.0 / denom, 0.0)
+
+        row_base = pid_zh * SEQ_Q + m_offs                     # contiguous outs
+        tl.store(ent_ptr + row_base, ent, mask=m_mask)
+        tl.store(maxw_ptr + row_base, maxw, mask=m_mask)
 
 
 def _device_ok(t: torch.Tensor) -> bool:
