@@ -64,7 +64,10 @@ def _attention_stats_kernel(
     m_i = tl.full((BLOCK_M,), float("-inf"), dtype=tl.float32)
     l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
     acc = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
+    
     r_i = tl.zeros((BLOCK_M,), dtype=tl.float32)              # sum exp(s-shift)*s
+    top_s = tl.full((BLOCK_M, TOPK), float("-inf"), dtype=tl.float32)
+    top_i = tl.full((BLOCK_M, TOPK), -1, dtype=tl.int32)
 
     if IS_CAUSAL:
         hi = tl.minimum(SEQ_K, (pid_m + 1) * BLOCK_M)
@@ -98,8 +101,24 @@ def _attention_stats_kernel(
 
         l_i = l_i * alpha + tl.sum(p, axis=1)
         acc = acc * alpha[:, None] + tl.dot(p.to(q_ptr.dtype.element_ty), v)
+
         if WITH_STATS:
             r_i = r_i * alpha + tl.sum(tl.where(valid, p * s, 0.0), axis=1)
+
+            s_work = s
+            col = tl.arange(0, BLOCK_N)
+            slot = tl.arange(0, TOPK)
+            for _t in range(TOPK):
+                bv = tl.max(s_work, axis=1)
+                bi = tl.argmax(s_work, axis=1).to(tl.int32)
+                mv = tl.min(top_s, axis=1)
+                mi_slot = tl.argmin(top_s, axis=1).to(tl.int32)
+                do_ins = bv > mv
+                ins = do_ins[:, None] & (slot[None, :] == mi_slot[:, None])
+                top_s = tl.where(ins, bv[:, None], top_s)
+                top_i = tl.where(ins, (bi + n_start)[:, None], top_i)
+                s_work = tl.where(col[None, :] == bi[:, None],
+                                  float("-inf"), s_work)
 
         m_i = m_new
 
@@ -120,6 +139,16 @@ def _attention_stats_kernel(
         row_base = pid_zh * SEQ_Q + m_offs                     # contiguous outs
         tl.store(ent_ptr + row_base, ent, mask=m_mask)
         tl.store(maxw_ptr + row_base, maxw, mask=m_mask)
+
+        shift_f = tl.where(m_i == float("-inf"), 0.0, m_i)
+        slot = tl.arange(0, TOPK)
+        top_valid = top_s > float("-inf")
+        top_p = tl.where(top_valid,
+                         tl.exp(top_s - shift_f[:, None]) / denom[:, None], 0.0)
+        top_i_out = tl.where(top_valid, top_i, -1)
+        top_base = row_base[:, None] * TOPK + slot[None, :]
+        tl.store(topp_ptr + top_base, top_p, mask=m_mask[:, None])
+        tl.store(topi_ptr + top_base, top_i_out, mask=m_mask[:, None])
 
 
 def _device_ok(t: torch.Tensor) -> bool:
