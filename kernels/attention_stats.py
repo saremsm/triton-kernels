@@ -64,7 +64,6 @@ def _attention_stats_kernel(
     m_i = tl.full((BLOCK_M,), float("-inf"), dtype=tl.float32)
     l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
     acc = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
-    
     r_i = tl.zeros((BLOCK_M,), dtype=tl.float32)              # sum exp(s-shift)*s
     top_s = tl.full((BLOCK_M, TOPK), float("-inf"), dtype=tl.float32)
     top_i = tl.full((BLOCK_M, TOPK), -1, dtype=tl.int32)
@@ -103,8 +102,8 @@ def _attention_stats_kernel(
         acc = acc * alpha[:, None] + tl.dot(p.to(q_ptr.dtype.element_ty), v)
 
         if WITH_STATS:
-            r_i = r_i * alpha + tl.sum(tl.where(valid, p * s, 0.0), axis=1)
-
+            # r-recurrence: same alpha rescale as l.
+            r_i = r_i * alpha + tl.sum(p * tl.where(valid, s, 0.0), axis=1)
             s_work = s
             col = tl.arange(0, BLOCK_N)
             slot = tl.arange(0, TOPK)
