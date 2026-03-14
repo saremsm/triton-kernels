@@ -87,6 +87,30 @@ reorder noise quantized to the fp16 grid) - nondeterminism *observed*
 live. Deterministic max |Δ| = **0.000e+00**, bitwise stability *verified*
 live on real parallel hardware.
 
+#### attention-stats numbers
+
+Measured on **1x A10 (24 GB), torch 2.10.0+cu126, triton 3.6.0**. Tests:
+**108/108 passed** repo-wide, including the GPU-only pin that the stats
+kernel's output equals the verified autotuned attention kernel's.
+
+**Non-causal** (B=4, H=8, D=64, fp16, TOPK=4):
+
+| seq | fused stats OFF (ms) | fused stats ON (ms) | **marginal** | SDPA + materialized (ms) | vs materialized |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 0.044 | 0.184 | **+317%** | 2.505 | 13.6× |
+| 1024 | 0.145 | 0.498 | **+243%** | 8.093 | 16.2× |
+| 2048 | 0.533 | 1.674 | **+214%** | 29.342 | 17.5× |
+| 4096 | 2.384 | 6.035 | **+153%** | 108.748 | 18.0× |
+
+**Causal**:
+
+| seq | fused stats OFF (ms) | fused stats ON (ms) | **marginal** | SDPA + materialized (ms) | vs materialized |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 0.036 | 0.160 | **+346%** | 2.790 | 17.4× |
+| 1024 | 0.097 | 0.371 | **+281%** | 9.166 | 24.7× |
+| 2048 | 0.324 | 1.059 | **+227%** | 33.913 | 32.0× |
+| 4096 | 1.359 | 3.653 | **+169%** | 125.999 | 34.5× |
+
 ## The canonical four
 
 Fused softmax, fused LayerNorm, tiled matmul, fused attention - the
