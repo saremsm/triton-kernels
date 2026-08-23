@@ -93,6 +93,15 @@ Measured on **1x A10 (24 GB), torch 2.10.0+cu126, triton 3.6.0**. Tests:
 **108/108 passed** repo-wide, including the GPU-only pin that the stats
 kernel's output equals the verified autotuned attention kernel's.
 
+Pre-run estimate, recorded in the run-3 commit before these numbers came
+back: marginal cost of streaming the stats out of the attention kernel,
+at most roughly 15%. Measured: **+153% to +346%** - a miss, published
+with the tables. The first explanation (top-k register pressure) died
+against the profiler; the one that held is that "compute-only" is not
+the same thing as cheap when it lengthens the inner loop's dependency
+chain. The vs-materialized claim survives the miss - 13.6-34.5x rests on
+the O(N) memory half of the argument, and that half held.
+
 **Non-causal** (B=4, H=8, D=64, fp16, TOPK=4):
 
 | seq | fused stats OFF (ms) | fused stats ON (ms) | **marginal** | SDPA + materialized (ms) | vs materialized |
